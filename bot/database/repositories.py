@@ -1,13 +1,17 @@
 """Репозитории для работы с базой данных"""
+import logging
 from typing import List, Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime
 
 from bot.database.models import (
     User, Profile, Game, ProfileGame, Order, ReminderTask
 )
+
+logger = logging.getLogger(__name__)
 
 
 class UserRepository:
@@ -91,19 +95,33 @@ class ProfileRepository:
     @staticmethod
     async def update(session: AsyncSession, profile_id: int, profile_data: dict) -> Optional[Profile]:
         """Обновить анкету"""
+        logger.info(f"[ProfileRepository.update] Начало. profile_id = {profile_id}, profile_data = {profile_data}")
+        
         result = await session.execute(
             select(Profile).where(Profile.id == profile_id)
         )
         profile = result.scalar_one_or_none()
         if not profile:
+            logger.error(f"[ProfileRepository.update] ОШИБКА: Профиль с id {profile_id} не найден")
             return None
         
+        logger.info(f"[ProfileRepository.update] Профиль найден: id={profile.id}, name={profile.name}")
+        logger.info(f"[ProfileRepository.update] Текущие photo_ids до обновления: {profile.photo_ids}")
+        
         for key, value in profile_data.items():
+            logger.info(f"[ProfileRepository.update] Обновляем поле {key}: {getattr(profile, key, None)} -> {value}")
             setattr(profile, key, value)
+            # Для JSON полей нужно явно пометить как измененное
+            if key == "photo_ids":
+                logger.info(f"[ProfileRepository.update] Помечаем photo_ids как измененное поле")
+                flag_modified(profile, "photo_ids")
         
         profile.updated_at = datetime.utcnow()
+        logger.info(f"[ProfileRepository.update] Сохраняем изменения в БД...")
         await session.commit()
+        logger.info(f"[ProfileRepository.update] Изменения сохранены, обновляем объект из БД...")
         await session.refresh(profile)
+        logger.info(f"[ProfileRepository.update] Профиль обновлен: id={profile.id}, photo_ids={profile.photo_ids}")
         return profile
     
     @staticmethod

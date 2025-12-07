@@ -8,6 +8,9 @@ from aiogram_dialog.widgets.kbd import (
     Back, Cancel, Group, ListGroup
 )
 from aiogram_dialog.widgets.input import MessageInput, TextInput
+from aiogram_dialog.widgets.media import DynamicMedia
+from aiogram.enums import ContentType
+from aiogram_dialog.api.entities import MediaAttachment, MediaId
 from aiogram.types import Message, CallbackQuery
 from aiogram_dialog.api.entities import ShowMode
 
@@ -349,165 +352,215 @@ async def on_profile_select(c: CallbackQuery, button: Button, manager: DialogMan
 
 async def on_view_photos(c: CallbackQuery, button: Button, manager: DialogManager):
     """Начало просмотра фотографий анкеты"""
+    logger.info(f"[on_view_photos] Начало. Текущее состояние: {manager.current_context().state}")
+    logger.info(f"[on_view_photos] dialog_data keys: {list(manager.dialog_data.keys())}")
+    
     profile_id = manager.dialog_data.get("selected_profile_id")
+    logger.info(f"[on_view_photos] profile_id = {profile_id}")
+    
     if not profile_id:
+        logger.error(f"[on_view_photos] ОШИБКА: profile_id не найден")
         await c.answer("❌ Анкета не выбрана", show_alert=True)
         return
     
     async with async_session_maker() as session:
+        logger.info(f"[on_view_photos] Получаем профиль из БД, profile_id = {profile_id}")
         profile = await ProfileRepository.get_by_id(session, profile_id)
         if not profile:
+            logger.error(f"[on_view_photos] ОШИБКА: Профиль с id {profile_id} не найден")
             await c.answer("❌ Анкета не найдена", show_alert=True)
             return
         
         photo_ids = profile.photo_ids or []
+        logger.info(f"[on_view_photos] Найдено фотографий: {len(photo_ids)}, photo_ids = {photo_ids}")
+        
         if not photo_ids:
+            logger.warning(f"[on_view_photos] У анкеты нет фотографий")
             await c.answer("❌ У этой анкеты нет фотографий", show_alert=True)
             return
         
         # Инициализируем просмотр с первой фотографии
         manager.dialog_data["photo_index"] = 0
-        
-        # Отправляем первую фотографию
-        try:
-            await c.bot.send_photo(
-                chat_id=c.from_user.id,
-                photo=photo_ids[0],
-                caption=f"📷 Фотография 1 из {len(photo_ids)}\nАнкета: {profile.name}"
-            )
-        except Exception as e:
-            logger.error(f"[on_view_photos] Ошибка при отправке фотографии: {e}")
-        
+        logger.info(f"[on_view_photos] Установили photo_index = 0, переключаемся на VIEW_PHOTOS")
         await manager.switch_to(states.AdminProfiles.VIEW_PHOTOS)
+        logger.info(f"[on_view_photos] Переключились на VIEW_PHOTOS")
 
 
 async def get_view_photos_data(dialog_manager: DialogManager, **kwargs):
     """Получение данных для просмотра фотографий"""
+    logger.info(f"[get_view_photos_data] Начало. Текущее состояние: {dialog_manager.current_context().state}")
+    logger.info(f"[get_view_photos_data] dialog_data keys: {list(dialog_manager.dialog_data.keys())}")
+    
     profile_id = dialog_manager.dialog_data.get("selected_profile_id")
     photo_index = dialog_manager.dialog_data.get("photo_index", 0)
     
+    logger.info(f"[get_view_photos_data] profile_id = {profile_id}, photo_index = {photo_index}")
+    
     if not profile_id:
+        logger.warning(f"[get_view_photos_data] profile_id не найден")
         return {
+            "photo_file_id": None,
             "photo_index": 0,
             "total_photos": 0,
             "photo_number": 0,
             "has_prev": False,
             "has_next": False,
+            "caption": "Фотографии не найдены",
         }
     
     async with async_session_maker() as session:
+        logger.info(f"[get_view_photos_data] Получаем профиль из БД, profile_id = {profile_id}")
+        # Всегда получаем свежие данные из БД, не используем кэш
         profile = await ProfileRepository.get_by_id(session, profile_id)
         if not profile:
+            logger.warning(f"[get_view_photos_data] Профиль с id {profile_id} не найден")
             return {
+                "photo_file_id": None,
                 "photo_index": 0,
                 "total_photos": 0,
                 "photo_number": 0,
                 "has_prev": False,
                 "has_next": False,
+                "caption": "Анкета не найдена",
             }
         
+        # Явно обновляем объект из БД, чтобы получить самые свежие данные
+        await session.refresh(profile)
         photo_ids = profile.photo_ids or []
         total_photos = len(photo_ids)
         
+        logger.info(f"[get_view_photos_data] Найдено фотографий: {total_photos}, photo_ids = {photo_ids}")
+        logger.info(f"[get_view_photos_data] Тип photo_ids: {type(photo_ids)}, это список? {isinstance(photo_ids, list)}")
+        
         if total_photos == 0:
+            logger.warning(f"[get_view_photos_data] У анкеты нет фотографий")
             return {
+                "photo_file_id": None,
                 "photo_index": 0,
                 "total_photos": 0,
                 "photo_number": 0,
                 "has_prev": False,
                 "has_next": False,
+                "caption": "У этой анкеты нет фотографий",
             }
         
+        # Получаем file_id текущей фотографии
+        current_photo_id = photo_ids[photo_index] if photo_index < len(photo_ids) else photo_ids[0]
+        caption = f"📷 Фотография {photo_index + 1} из {total_photos}\nАнкета: {profile.name}"
+        
+        logger.info(f"[get_view_photos_data] Текущая фотография: индекс {photo_index}, file_id = {current_photo_id}")
+        
+        # Создаем MediaAttachment для DynamicMedia виджета (без caption, чтобы избежать конфликта)
+        photo_media = MediaAttachment(
+            ContentType.PHOTO,
+            file_id=MediaId(current_photo_id),
+        )
+        
+        logger.info(f"[get_view_photos_data] Создан MediaAttachment с file_id = {current_photo_id}")
+        
         return {
+            "photo_file_id": current_photo_id,
+            "photo_media": photo_media,
+            "photo_caption": caption,
             "photo_index": photo_index,
             "total_photos": total_photos,
             "photo_number": photo_index + 1,
             "has_prev": photo_index > 0,
             "has_next": photo_index < total_photos - 1,
             "profile_name": profile.name,
+            "caption": caption,
         }
 
 
 async def on_prev_photo(c: CallbackQuery, button: Button, manager: DialogManager):
     """Переход к предыдущей фотографии"""
+    logger.info(f"[on_prev_photo] Начало. Текущее состояние: {manager.current_context().state}")
+    
     profile_id = manager.dialog_data.get("selected_profile_id")
     photo_index = manager.dialog_data.get("photo_index", 0)
     
+    logger.info(f"[on_prev_photo] profile_id = {profile_id}, photo_index = {photo_index}")
+    
     if photo_index > 0:
-        manager.dialog_data["photo_index"] = photo_index - 1
-        
-        # Отправляем предыдущую фотографию
-        async with async_session_maker() as session:
-            profile = await ProfileRepository.get_by_id(session, profile_id)
-            if profile:
-                photo_ids = profile.photo_ids or []
-                new_index = photo_index - 1
-                if new_index < len(photo_ids):
-                    try:
-                        await c.bot.send_photo(
-                            chat_id=c.from_user.id,
-                            photo=photo_ids[new_index],
-                            caption=f"📷 Фотография {new_index + 1} из {len(photo_ids)}\nАнкета: {profile.name}"
-                        )
-                    except Exception as e:
-                        logger.error(f"[on_prev_photo] Ошибка при отправке фотографии: {e}")
-        
+        new_index = photo_index - 1
+        manager.dialog_data["photo_index"] = new_index
+        logger.info(f"[on_prev_photo] Переходим к предыдущей фотографии: {photo_index} -> {new_index}")
         await manager.show()
+        logger.info(f"[on_prev_photo] Окно обновлено")
+    else:
+        logger.warning(f"[on_prev_photo] Уже на первой фотографии, переход невозможен")
 
 
 async def on_next_photo(c: CallbackQuery, button: Button, manager: DialogManager):
     """Переход к следующей фотографии"""
+    logger.info(f"[on_next_photo] Начало. Текущее состояние: {manager.current_context().state}")
+    
     profile_id = manager.dialog_data.get("selected_profile_id")
+    logger.info(f"[on_next_photo] profile_id = {profile_id}")
+    
     if not profile_id:
+        logger.error(f"[on_next_photo] ОШИБКА: profile_id не найден")
         await c.answer("❌ Анкета не выбрана", show_alert=True)
         return
     
     async with async_session_maker() as session:
+        logger.info(f"[on_next_photo] Получаем профиль из БД, profile_id = {profile_id}")
         profile = await ProfileRepository.get_by_id(session, profile_id)
         if not profile:
+            logger.error(f"[on_next_photo] ОШИБКА: Профиль с id {profile_id} не найден")
             await c.answer("❌ Анкета не найдена", show_alert=True)
             return
         
         photo_ids = profile.photo_ids or []
         photo_index = manager.dialog_data.get("photo_index", 0)
         
+        logger.info(f"[on_next_photo] Всего фотографий: {len(photo_ids)}, текущий индекс: {photo_index}")
+        
         if photo_index < len(photo_ids) - 1:
-            manager.dialog_data["photo_index"] = photo_index + 1
-            
-            # Отправляем следующую фотографию
             new_index = photo_index + 1
-            try:
-                await c.bot.send_photo(
-                    chat_id=c.from_user.id,
-                    photo=photo_ids[new_index],
-                    caption=f"📷 Фотография {new_index + 1} из {len(photo_ids)}\nАнкета: {profile.name}"
-                )
-            except Exception as e:
-                logger.error(f"[on_next_photo] Ошибка при отправке фотографии: {e}")
-            
+            manager.dialog_data["photo_index"] = new_index
+            logger.info(f"[on_next_photo] Переходим к следующей фотографии: {photo_index} -> {new_index}")
             await manager.show()
+            logger.info(f"[on_next_photo] Окно обновлено")
+        else:
+            logger.warning(f"[on_next_photo] Уже на последней фотографии, переход невозможен")
 
 
 async def on_replace_photo(c: CallbackQuery, button: Button, manager: DialogManager):
     """Начало замены фотографии"""
+    logger.info(f"[on_replace_photo] Начало. Текущее состояние: {manager.current_context().state}")
+    logger.info(f"[on_replace_photo] dialog_data keys: {list(manager.dialog_data.keys())}")
+    
     profile_id = manager.dialog_data.get("selected_profile_id")
     photo_index = manager.dialog_data.get("photo_index", 0)
     
+    logger.info(f"[on_replace_photo] profile_id = {profile_id}, photo_index = {photo_index}")
+    
     if not profile_id:
+        logger.error(f"[on_replace_photo] ОШИБКА: profile_id не найден")
         await c.answer("❌ Анкета не выбрана", show_alert=True)
         return
     
     # Сохраняем индекс фотографии для замены
     manager.dialog_data["replace_photo_index"] = photo_index
+    logger.info(f"[on_replace_photo] Сохранили replace_photo_index = {photo_index}")
+    logger.info(f"[on_replace_photo] Переключаемся на REPLACE_PHOTO")
     await manager.switch_to(states.AdminProfiles.REPLACE_PHOTO)
+    logger.info(f"[on_replace_photo] Переключились на REPLACE_PHOTO")
 
 
 async def get_replace_photo_data(dialog_manager: DialogManager, **kwargs):
     """Получение данных для окна замены фотографии"""
+    logger.info(f"[get_replace_photo_data] Начало. Текущее состояние: {dialog_manager.current_context().state}")
+    logger.info(f"[get_replace_photo_data] dialog_data keys: {list(dialog_manager.dialog_data.keys())}")
+    
     profile_id = dialog_manager.dialog_data.get("selected_profile_id")
     photo_index = dialog_manager.dialog_data.get("replace_photo_index", 0)
     
+    logger.info(f"[get_replace_photo_data] profile_id = {profile_id}, photo_index = {photo_index}")
+    
     if not profile_id:
+        logger.warning(f"[get_replace_photo_data] profile_id не найден")
         return {
             "photo_index": 0,
             "total_photos": 0,
@@ -517,6 +570,7 @@ async def get_replace_photo_data(dialog_manager: DialogManager, **kwargs):
     async with async_session_maker() as session:
         profile = await ProfileRepository.get_by_id(session, profile_id)
         if not profile:
+            logger.warning(f"[get_replace_photo_data] Профиль с id {profile_id} не найден")
             return {
                 "photo_index": 0,
                 "total_photos": 0,
@@ -525,6 +579,8 @@ async def get_replace_photo_data(dialog_manager: DialogManager, **kwargs):
         
         photo_ids = profile.photo_ids or []
         total_photos = len(photo_ids)
+        
+        logger.info(f"[get_replace_photo_data] Найдено фотографий: {total_photos}, заменяем фото {photo_index + 1}")
         
         return {
             "photo_index": photo_index,
@@ -535,14 +591,22 @@ async def get_replace_photo_data(dialog_manager: DialogManager, **kwargs):
 
 async def on_replace_photo_received(message: Message, widget: MessageInput, manager: DialogManager):
     """Обработка получения новой фотографии для замены"""
+    logger.info(f"[on_replace_photo_received] Начало. Текущее состояние: {manager.current_context().state}")
+    logger.info(f"[on_replace_photo_received] message.photo = {message.photo}")
+    logger.info(f"[on_replace_photo_received] dialog_data keys: {list(manager.dialog_data.keys())}")
+    
     if not message.photo:
+        logger.warning(f"[on_replace_photo_received] Фотография не найдена в сообщении")
         await message.answer("❌ Отправьте фотографию")
         return
     
     profile_id = manager.dialog_data.get("selected_profile_id")
     photo_index = manager.dialog_data.get("replace_photo_index")
     
+    logger.info(f"[on_replace_photo_received] profile_id = {profile_id}, photo_index = {photo_index}")
+    
     if profile_id is None or photo_index is None:
+        logger.error(f"[on_replace_photo_received] ОШИБКА: profile_id = {profile_id}, photo_index = {photo_index}")
         await message.answer("❌ Ошибка: не выбрана фотография для замены")
         return
     
@@ -550,28 +614,66 @@ async def on_replace_photo_received(message: Message, widget: MessageInput, mana
     photo = message.photo[-1]
     new_photo_id = photo.file_id
     
+    logger.info(f"[on_replace_photo_received] Новый photo_id = {new_photo_id}")
+    logger.info(f"[on_replace_photo_received] Размеры фотографий: {[p.file_size for p in message.photo]}")
+    
     async with async_session_maker() as session:
+        logger.info(f"[on_replace_photo_received] Получаем профиль из БД, profile_id = {profile_id}")
         profile = await ProfileRepository.get_by_id(session, profile_id)
         if not profile:
+            logger.error(f"[on_replace_photo_received] ОШИБКА: Профиль с id {profile_id} не найден")
             await message.answer("❌ Анкета не найдена")
             return
         
         photo_ids = profile.photo_ids or []
+        logger.info(f"[on_replace_photo_received] Текущие photo_ids до замены: {photo_ids}")
+        logger.info(f"[on_replace_photo_received] Количество фотографий: {len(photo_ids)}, заменяем индекс {photo_index}")
+        
         if photo_index >= len(photo_ids):
+            logger.error(f"[on_replace_photo_received] ОШИБКА: photo_index {photo_index} >= len(photo_ids) {len(photo_ids)}")
             await message.answer("❌ Ошибка: неверный индекс фотографии")
             return
         
-        # Заменяем фотографию
-        photo_ids[photo_index] = new_photo_id
+        # Заменяем фотографию - создаем НОВЫЙ список через list(), чтобы SQLAlchemy заметил изменение
+        old_photo_id = photo_ids[photo_index]
+        new_photo_ids = list(photo_ids)  # Создаем новый список через list()
+        new_photo_ids[photo_index] = new_photo_id
+        
+        logger.info(f"[on_replace_photo_received] Старый photo_id = {old_photo_id}")
+        logger.info(f"[on_replace_photo_received] Новый photo_id = {new_photo_id}")
+        logger.info(f"[on_replace_photo_received] Старый список photo_ids: {photo_ids}")
+        logger.info(f"[on_replace_photo_received] Новый список photo_ids: {new_photo_ids}")
+        logger.info(f"[on_replace_photo_received] Старый список - это тот же объект? {photo_ids is profile.photo_ids}")
+        logger.info(f"[on_replace_photo_received] Новый список - это новый объект? {new_photo_ids is not photo_ids}")
         
         # Сохраняем в базу
-        await ProfileRepository.update(session, profile_id, {"photo_ids": photo_ids})
+        logger.info(f"[on_replace_photo_received] Сохраняем в БД, profile_id = {profile_id}, photo_ids = {new_photo_ids}")
+        try:
+            updated_profile = await ProfileRepository.update(session, profile_id, {"photo_ids": new_photo_ids})
+            logger.info(f"[on_replace_photo_received] Профиль обновлен: {updated_profile}")
+            
+            # Проверяем, что изменения сохранились
+            profile_check = await ProfileRepository.get_by_id(session, profile_id)
+            if profile_check:
+                logger.info(f"[on_replace_photo_received] Проверка после обновления: photo_ids = {profile_check.photo_ids}")
+                logger.info(f"[on_replace_photo_received] Проверка: новый photo_id в списке? {new_photo_id in (profile_check.photo_ids or [])}")
+            else:
+                logger.error(f"[on_replace_photo_received] ОШИБКА: Профиль не найден после обновления")
+        except Exception as e:
+            logger.error(f"[on_replace_photo_received] ОШИБКА при обновлении профиля: {e}", exc_info=True)
+            await message.answer(f"❌ Ошибка при сохранении: {str(e)}")
+            return
         
         await message.answer(f"✅ Фотография {photo_index + 1} заменена")
         
         # Возвращаемся к просмотру фотографий
         manager.dialog_data["photo_index"] = photo_index
+        logger.info(f"[on_replace_photo_received] Возвращаемся к VIEW_PHOTOS, photo_index = {photo_index}")
         await manager.switch_to(states.AdminProfiles.VIEW_PHOTOS)
+        logger.info(f"[on_replace_photo_received] Переключились на VIEW_PHOTOS, теперь обновляем окно...")
+        # Явно обновляем окно, чтобы показать новую фотографию
+        await manager.show()
+        logger.info(f"[on_replace_photo_received] Окно обновлено")
 
 
 async def on_add_profile(c: CallbackQuery, button: Button, manager: DialogManager):
@@ -1664,7 +1766,11 @@ profiles_dialog = Dialog(
     
     # Просмотр фотографий с пролистыванием
     Window(
-        Format("📷 <b>Просмотр фотографий</b>\n\nФотография {photo_number} из {total_photos}"),
+        DynamicMedia(
+            "photo_media",
+            when=lambda data, widget, manager: data.get("photo_file_id") is not None,
+        ),
+        Format("{caption}"),
         Row(
             Button(
                 Const("◀️ Предыдущая"),
