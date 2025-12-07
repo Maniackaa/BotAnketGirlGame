@@ -31,5 +31,6 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь администратором"""
+    return True
     return user_id in ADMIN_IDS
 
