@@ -1,6 +1,15 @@
 """Точка входа для запуска бота"""
 import asyncio
 import logging
+import sys
+from pathlib import Path
+
+# Добавляем корневую директорию проекта в sys.path
+# Это позволяет импортировать модули как 'bot.config' даже при запуске через python bot/main.py
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
